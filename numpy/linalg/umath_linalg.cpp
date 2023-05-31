@@ -4063,6 +4063,243 @@ dispatch_scalar<typ>{});
     set_fp_invalid_or_clear(error_occurred);
 }
 
+/* -------------------------------------------------------------------------- */
+                 /* Gram iterates */
+
+template<typename typ>
+struct GI_PARAMS_t
+{
+    char TRANSA;
+    char TRANSB;
+    fortran_int M;
+    fortran_int N;
+    fortran_int K;
+    typ ALPHA;
+    typ *A;
+    fortran_int LDA;
+    typ *B;
+    fortran_int LDB;
+    typ BETA;
+    typ *C;
+    fortran_int LDC;
+};
+
+static inline void
+call_gemm(GI_PARAMS_t<fortran_real> *params)
+{
+    LAPACK(sgemm)(&params->TRANSA, &params->TRANSB,
+                  &params->M, &params->N, &params->K,
+                  &params->ALPHA, params->A, &params->LDA,
+                  params->B, &params->LDB,
+                  &params->BETA, params->C, &params->LDC);
+}
+
+static inline void
+call_gemm(GI_PARAMS_t<fortran_doublereal> *params)
+{
+    LAPACK(dgemm)(&params->TRANSA, &params->TRANSB,
+                  &params->M, &params->N, &params->K,
+                  &params->ALPHA, params->A, &params->LDA,
+                  params->B, &params->LDB,
+                  &params->BETA, params->C, &params->LDC);
+}
+
+static inline void
+call_gemm(GI_PARAMS_t<fortran_complex> *params)
+{
+    LAPACK(cgemm)(&params->TRANSA, &params->TRANSB,
+                  &params->M, &params->N, &params->K,
+                  &params->ALPHA, params->A, &params->LDA,
+                  params->B, &params->LDB,
+                  &params->BETA, params->C, &params->LDC);
+}
+
+static inline void
+call_gemm(GI_PARAMS_t<fortran_doublecomplex> *params)
+{
+    LAPACK(zgemm)(&params->TRANSA, &params->TRANSB,
+                  &params->M, &params->N, &params->K,
+                  &params->ALPHA, params->A, &params->LDA,
+                  params->B, &params->LDB,
+                  &params->BETA, params->C, &params->LDC);
+}
+
+
+template<typename ftyp>
+static inline int
+init_gram(GI_PARAMS_t<ftyp> *params, fortran_int m, fortran_int n)
+{
+    npy_uint8 *mem_buff = NULL;
+    npy_uint8 *mem_buff2 = NULL;
+    npy_uint8 *a, *c;
+    size_t a_size = m * n * sizeof(ftyp);
+    size_t c_size = n * n * sizeof(ftyp);
+
+    mem_buff = (npy_uint8 *)malloc(a_size);
+    if (!mem_buff)
+        goto error;
+    a = mem_buff;
+
+    mem_buff2 = (npy_uint8 *)malloc(c_size);
+    if (!mem_buff2)
+        goto error;
+    c = mem_buff2;
+
+    params->TRANSA = 'C';
+    params->TRANSB = 'N';
+    params->M = n;
+    params->N = n;
+    params->K = m;
+    params->ALPHA = numeric_limits<ftyp>::one;
+    params->A = (ftyp*)a;
+    params->LDA = m;
+    params->B = (ftyp*)a; // B is equal to A
+    params->LDB = m;
+    params->BETA = numeric_limits<ftyp>::zero;
+    params->C = (ftyp*)c;
+    params->LDC = n;
+
+    return 1;
+
+ error:
+    free(mem_buff);
+    free(mem_buff2);
+    memset(params, 0, sizeof(*params));
+
+    return 0;
+}
+
+
+template<typename typ>
+static inline void
+release_gram(GI_PARAMS_t<typ>* params)
+{
+    free(params->A);
+    free(params->C);
+    memset(params, 0, sizeof(*params));
+}
+
+
+template<typename typ>
+static double
+traceh(typ* x, int size, scalar_trait)
+{
+    double tr = 0;
+    for (int k = 0; k < size; ++k)
+    {
+        tr += *x;
+        x += size + 1;
+    }
+    return tr;
+}
+template<typename typ>
+static double
+traceh(typ* x, int size, complex_trait)
+{
+    double tr = 0;
+    for (int k = 0; k < size; ++k)
+    {
+        tr += (*x).r;
+        x += size + 1;
+    }
+    return tr;
+}
+
+template<typename typ>
+static void
+divide(typ* x1, double x2, int size, scalar_trait)
+{
+    for (int k = 0; k < size; ++k)
+    {
+        *x1 /= x2;
+        x1++;
+    }
+}
+template<typename typ>
+static void
+divide(typ* x1, double x2, int size, complex_trait)
+{
+    for (int k = 0; k < size; ++k)
+    {
+        (*x1).r /= x2;
+        (*x1).i /= x2;
+        x1++;
+    }
+}
+
+
+template<typename typ>
+static inline void
+gram_iterates_single_element(GI_PARAMS_t<typ> *params, int n_iters)
+{
+    int m = params->K;
+    int n = params->N;
+    int n2 = n * n;
+    size_t c_size = n2 * sizeof(typ);
+    double tr = 0;
+
+    memset(params->C, 0, c_size);
+
+    for (int iter = 0; iter < n_iters; ++iter)
+    {
+        // compute C = A^H B = A^H A
+        call_gemm(params);
+        // compute trace of C (which is real, because C is Hermitian)
+        tr = traceh(params->C, n, dispatch_scalar<typ>{});
+        // divide C by its trace
+        divide(params->C, tr, n2, dispatch_scalar<typ>{});
+        // define C as next A
+        memcpy(params->A, params->C, c_size);
+        // update dimensions of A (and B)
+        params->K = n;
+        params->LDA = n;
+        params->LDB = n;
+    }
+
+    // restore dimensions of A (and B)
+    params->K = m;
+    params->LDA = m;
+    params->LDB = m;
+}
+
+
+template<typename typ>
+static void
+gram_iterates(char **args,
+           npy_intp const *dimensions,
+           npy_intp const *steps,
+           void *NPY_UNUSED(func))
+{
+using ftyp = fortran_type_t<typ>;
+    GI_PARAMS_t<ftyp> params;
+    int error_occurred = get_fp_invalid_and_clear();
+    fortran_int m, n;
+    int n_iters;
+
+    INIT_OUTER_LOOP_3
+
+    m = (fortran_int)dimensions[0];
+    n = (fortran_int)dimensions[1];
+
+    if (init_gram(&params, m, n)) {
+        LINEARIZE_DATA_t a_in, c_out;
+
+        init_linearize_data(&a_in, n, m, steps[1], steps[0]);
+        init_linearize_data(&c_out, n, n, steps[3], steps[2]);
+
+        BEGIN_OUTER_LOOP_3
+            linearize_matrix((typ*)params.A, (typ*)args[0], &a_in);
+            n_iters = *(int*)args[1];
+            gram_iterates_single_element(&params, n_iters);
+            delinearize_matrix((typ*)args[2], (typ*)params.C, &c_out);
+        END_OUTER_LOOP
+
+        release_gram(&params);
+    }
+
+    set_fp_invalid_or_clear(error_occurred);
+}
+
 #pragma GCC diagnostic pop
 
 /* -------------------------------------------------------------------------- */
@@ -4166,6 +4403,7 @@ GUFUNC_FUNC_ARRAY_REAL_COMPLEX__(cholesky_lo);
 GUFUNC_FUNC_ARRAY_REAL_COMPLEX__(svd_N);
 GUFUNC_FUNC_ARRAY_REAL_COMPLEX__(svd_S);
 GUFUNC_FUNC_ARRAY_REAL_COMPLEX__(svd_A);
+GUFUNC_FUNC_ARRAY_REAL_COMPLEX__(gram_iterates);
 GUFUNC_FUNC_ARRAY_QR__(qr_r_raw);
 GUFUNC_FUNC_ARRAY_QR__(qr_reduced);
 GUFUNC_FUNC_ARRAY_QR__(qr_complete);
@@ -4259,6 +4497,13 @@ static char lstsq_types[] = {
     NPY_DOUBLE,  NPY_DOUBLE,  NPY_DOUBLE, NPY_DOUBLE,  NPY_DOUBLE, NPY_INT, NPY_DOUBLE,
     NPY_CFLOAT,  NPY_CFLOAT,  NPY_FLOAT,  NPY_CFLOAT,  NPY_FLOAT,  NPY_INT, NPY_FLOAT,
     NPY_CDOUBLE, NPY_CDOUBLE, NPY_DOUBLE, NPY_CDOUBLE, NPY_DOUBLE, NPY_INT, NPY_DOUBLE,
+};
+
+static char gram_types[] = {
+    NPY_FLOAT, NPY_INT, NPY_FLOAT,
+    NPY_DOUBLE, NPY_INT, NPY_DOUBLE,
+    NPY_CFLOAT, NPY_INT, NPY_CFLOAT,
+    NPY_CDOUBLE, NPY_INT, NPY_CDOUBLE,
 };
 
 typedef struct gufunc_descriptor_struct {
@@ -4505,6 +4750,15 @@ GUFUNC_DESCRIPTOR_t gufunc_descriptors [] = {
         4, 3, 4,
         FUNC_ARRAY_NAME(lstsq),
         lstsq_types
+    },
+    {
+        "gram_iterates",
+        "(m,n),()->(n,n)",
+        "Gram iterates on the last two dimensions and broadcast to the rest. "\
+        "For m > n. \n",
+        4, 2, 1,
+        FUNC_ARRAY_NAME(gram_iterates),
+        gram_types
     }
 };
 

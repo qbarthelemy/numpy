@@ -2307,6 +2307,46 @@ def lstsq(a, b, rcond="warn"):
     return wrap(x), wrap(resids), rank, s
 
 
+def _gram_iteration(x, axis, n_iters=10):
+    """Compute spectral norms of the 2-D matrices in `x`.
+
+    This is a private utility function used by `numpy.linalg.norm()`.
+
+    Parameters
+    ----------
+    x : ndarray
+    axis : {None, 2-tuple of ints}, optional
+        The axes of `x` that hold the 2-D matrices. If None, it uses last axes.
+    n_iters : int, default 10
+        Number of Gram iterations.
+
+    Returns
+    -------
+    result : float or ndarray
+        Spectral norm of matrices.
+        If `x` is 2-D, the return value is a float.
+        Otherwise, it is an array with ``x.ndim - 2`` dimensions.
+
+    """
+    if axis is None:
+        axis = (-2, -1)
+    x = moveaxis(x, axis, (-2, -1))
+    m, n = x.shape[-2:]
+    if m < n:
+        x = swapaxes(x, -2, -1)
+    x_0 = x
+
+    x, wrap = _makearray(x)
+    t, result_t = _commonType(x)
+    signature = 'Di->D' if isComplexType(t) else 'di->d'
+    x_n = _umath_linalg.gram_iterates(x, n_iters, signature=signature)
+    x_n = wrap(x_n.astype(result_t, copy=False))
+
+    x_n /= norm(x_n, ord="fro", axis=(-2, -1), keepdims=True)
+    result = norm(x_0 @ x_n, ord="fro", axis=(-2, -1))
+    return result
+
+
 def _multi_svd_norm(x, row_axis, col_axis, op):
     """Compute a function of the singular values of the 2-D matrices in `x`.
 
@@ -2557,7 +2597,7 @@ def norm(x, ord=None, axis=None, keepdims=False):
         if row_axis == col_axis:
             raise ValueError('Duplicate axes given.')
         if ord == 2:
-            ret =  _multi_svd_norm(x, row_axis, col_axis, amax)
+            ret = _gram_iteration(x, (row_axis, col_axis))
         elif ord == -2:
             ret = _multi_svd_norm(x, row_axis, col_axis, amin)
         elif ord == 1:

@@ -1510,6 +1510,14 @@ class _TestNorm2D(_TestNormBase):
         assert_raises(np.AxisError, norm, B, None, (2, 3))
         assert_raises(ValueError, norm, B, None, (0, 1, 2))
 
+    def test_norm_2(self):
+        # Check that spectral norm is equal to largest singular value
+        np.random.seed(1)
+        A = np.random.randn(5, 12, 8)
+        n1 = norm(A, 2, axis=(-2, -1))
+        n2 = np.max(linalg.svd(A, compute_uv=False), axis=-1)
+        assert_almost_equal(n1, n2)
+
 
 class _TestNorm(_TestNorm2D, _TestNormGeneral):
     pass
@@ -1540,6 +1548,18 @@ class TestNorm_NonSystematic:
         old_assert_almost_equal(np.linalg.norm(d, ord=3), res, decimal=9)
         d = d.astype(np.complex64)
         old_assert_almost_equal(np.linalg.norm(d, ord=3), res, decimal=5)
+
+    def test_matrix_2x2_complex(self):
+        A = np.array([[1, -1j], [1j, 1]])
+        assert_almost_equal(norm(A), 2.0)
+        assert_almost_equal(norm(A, 'fro'), 2.0)
+        assert_almost_equal(norm(A, 'nuc'), 2.0)
+        assert_almost_equal(norm(A, inf), 2.0)
+        assert_almost_equal(norm(A, -inf), 2.0)
+        assert_almost_equal(norm(A, 1), 2.0)
+        assert_almost_equal(norm(A, -1), 2.0)
+        assert_almost_equal(norm(A, 2), 2.0)
+        assert_almost_equal(norm(A, -2), 0.0)
 
 
 # Separate definitions so we can use them for matrix tests.
